@@ -2,3 +2,6 @@
 name = "rust-8"
 version = "0.0.1"
 authors = ["Ryan Levick <ryan.levick@gmail.com>"]
+
+[dependencies]
+sdl2 = "0.13.0"
