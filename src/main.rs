@@ -1,4 +1,5 @@
 extern crate sdl2;
+extern crate rand;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -8,6 +9,12 @@ use sdl2::render;
 use sdl2::video;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
+
+use std::thread::sleep;
+use std::time::Duration;
+
+use rand::Rng;
+use rand::distributions::{IndependentSample, Range};
 
 fn main() {
     let file_name = env::args().nth(1).expect("Must give game name as first file");
@@ -43,7 +50,7 @@ impl<'a> Chip8<'a> {
         for (i, byte) in program.iter().enumerate() {
             memory[PROGRAM_CODE_OFFSET + i] = byte.clone();
         }
-        for (i, byte) in ZERO_SRITE.iter().enumerate() {
+        for (i, byte) in SPRITES.iter().enumerate() {
             memory[i] = byte.clone();
         }
         let sdl_context = sdl2::init().unwrap();
@@ -66,39 +73,126 @@ impl<'a> Chip8<'a> {
     fn run(&mut self) {
         loop {
             let instruction = self.instruction();
-            self.run_instruction(instruction);
-            self.program_counter_reg += 2;
+            println!("{:x}",instruction.value);
+            self.program_counter_reg = self.run_instruction(instruction);
         }
     }
 
-    fn run_instruction(&mut self, instruction: Instruction) {
+    fn run_instruction(&mut self, instruction: Instruction) -> u16 {
         match instruction.xooo() {
-            0x6 => {
+            0x0 => {
+                match instruction.ooox() {
+                    0xe => {
+                        self.stack_pointer_reg -= 1;
+                        // TODO: make stack and actual stack
+                        self.stack[0] + 2
+                    }
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                }
+            },
+            0x1 => {
+                instruction.oxxx()
+            }
+            0x2 => {
+                let addr = instruction.oxxx();
+                self.stack_pointer_reg += 1;
+                // TODO: make stack and actual stack
+                println!("FIX THE SUBROUTINE CALLS");
+                self.stack[0] = self.program_counter_reg;
+                addr
+            },
+            0x3 => {
                 let reg_number = instruction.oxoo();
                 let value = instruction.ooxx();
-                self.load_reg(reg_number, value)
+                if self.read_reg(reg_number) == value {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
+                }
+            },
+            0x6 => {
+                // load oxoo with the value ooxx
+                let reg_number = instruction.oxoo();
+                let value = instruction.ooxx();
+                self.load_reg(reg_number, value);
+                self.program_counter_reg + 2
+            },
+            0x7 => {
+                let reg_number = instruction.oxoo();
+                let value = instruction.ooxx();
+                self.load_reg(reg_number, value);
+                self.program_counter_reg + 2
             },
             0xa => {
-                let addr = instruction.oxxx();
-                let value = self.i_reg;
-                let lower = value as u8;
-                let upper = (value >> 8) as u8;
-                self.memory[addr as usize] = upper;
-                self.memory[(addr + 1) as usize] = lower;
+                // load reg i with the value oxxx
+                self.i_reg = instruction.oxxx();
+                self.program_counter_reg + 2
+            },
+            0xc => {
+                let reg_number = instruction.oxoo();
+                let value = instruction.ooxx();
+                let rng = &mut rand::thread_rng();
+                let rand_number = Range::new(0,255).ind_sample(rng);
+                let and_value = value & rand_number;
+
+                self.load_reg(reg_number, and_value);
+                self.program_counter_reg + 2
             },
             0xd => {
+                // load ooox bytes to the screen starting at coor oxoo,ooxo with the sprite located
+                // at memory location stored in reg i
                 let x = instruction.oxoo();
                 let y = instruction.ooxo();
                 let n = instruction.ooox();
                 let i = self.i_reg;
                 let from = i as usize;
-                let to = (i + (n as u16)) as usize;
+                let to = from + (n as usize);
 
                 let overwritten = self.display.draw(x, y, &self.memory[from..to]);
-                self.regs[15] = if overwritten { 1 } else { 0 };
+                self.regs[0xF] = if overwritten { 1 } else { 0 };
+                self.program_counter_reg + 2
+            },
+            0xF => {
+                match instruction.ooxx() {
+                    0x7 => {
+                        let reg_number = instruction.oxoo();
+                        let delay_value = self.delay_timer_reg;
+                        self.load_reg(reg_number, delay_value);
+                        self.program_counter_reg + 2
+                    },
+                    0x15 => {
+                        //TODO set timer
+                        self.program_counter_reg + 2
+                    },
+                    0x29 => {
+                        let reg = instruction.oxoo();
+                        let digit = self.read_reg(reg);
+                        self.i_reg = (digit * 5) as u16;
+                        self.program_counter_reg + 2
+                    },
+                    0x33 => {
+                        let reg_number = instruction.oxoo();
+                        let value = self.read_reg(reg_number);
+                        self.memory[self.i_reg as usize] = (value / 100) % 10;
+                        self.memory[(self.i_reg + 1) as usize] = (value / 10) % 10;
+                        self.memory[(self.i_reg + 2) as usize] = value % 10;
+                        self.program_counter_reg + 2
+                    },
+                    0x65 => {
+                        let highest_reg = instruction.oxoo();
+                        let i = self.i_reg;
+                        let mut offset = 0;
+                        for reg_number in 1..(highest_reg + 1) {
+                            let value = self.memory[(i + offset) as usize];
+                            self.load_reg(reg_number, value);
+                            offset += 1;
+                        }
+                        self.program_counter_reg + 2
+                    },
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                }
             }
             _ => {
-                // loop {}
                 panic!("Unrecognized instruction {:x}", instruction.value)
             }
         }
@@ -111,8 +205,12 @@ impl<'a> Chip8<'a> {
         Instruction::new(higher_order + lower_order)
     }
 
+    fn read_reg(&self, reg_number: u8) -> u8 {
+        self.regs[(reg_number as usize)]
+    }
+
     fn load_reg(&mut self, reg_number: u8, value: u8) {
-        self.regs[(reg_number as usize) - 1] = value;
+        self.regs[(reg_number as usize)] = value;
     }
 }
 
@@ -153,7 +251,7 @@ impl Instruction {
 
     #[inline(always)]
     fn ooxx(&self) -> u8 {
-        (self.value >> 8) as u8
+        (self.value & 0xFF) as u8
     }
 
     #[inline(always)]
@@ -163,9 +261,17 @@ impl Instruction {
 }
 
 const DISPLAY_WIDTH: usize = 64;
-const DISPLAY_HEIGHT: usize = 31;
+const DISPLAY_HEIGHT: usize = 32;
 const ENLARGEMENT_FACTOR: usize = 20;
-const ZERO_SRITE: [u8; 5] = [0xF0, 0x90, 0x90, 0x90, 0xF0];
+const SPRITES: [u8; 80] =
+    [0xF0, 0x90, 0x90, 0x90, 0xF0, 0x20, 0x60, 0x20, 0x20, 0x70,
+     0xF0, 0x10, 0xF0, 0x80, 0xF0, 0xF0, 0x10, 0xF0, 0x10, 0xF0,
+     0x90, 0x90, 0xF0, 0x10, 0x10, 0xF0, 0x80, 0xF0, 0x10, 0xF0,
+     0xF0, 0x80, 0xF0, 0x90, 0xF0, 0xF0, 0x10, 0x20, 0x40, 0x40,
+     0xF0, 0x90, 0xF0, 0x90, 0xF0, 0xF0, 0x90, 0xF0, 0x10, 0xF0,
+     0xF0, 0x90, 0xF0, 0x90, 0x90, 0xE0, 0x90, 0xE0, 0x90, 0xE0,
+     0xF0, 0x80, 0x80, 0x80, 0xF0, 0xE0, 0x90, 0x90, 0x90, 0xE0,
+     0xF0, 0x80, 0xF0, 0x80, 0xF0, 0xF0, 0x80, 0xF0, 0x80, 0x80];
 
 struct Display<'a> {
     renderer: render::Renderer<'a>,
@@ -194,15 +300,18 @@ impl<'a> Display<'a> {
     fn draw(&mut self, starting_x: u8, starting_y: u8, memory: &[u8]) -> bool {
         let mut pixel_overwritten = false;
         for (y_offset, block) in memory.iter().enumerate() {
-            let y = ((starting_y - y_offset as u8) % DISPLAY_HEIGHT as u8) as usize;
+            let y = ((starting_y + y_offset as u8) % DISPLAY_HEIGHT as u8) as usize;
 
-            for x_offset in 1..8 {
-                let bit = (block >> (8 - x_offset)) & 1;
+            for x_offset in 0..8 {
                 let x = ((starting_x + x_offset) % DISPLAY_WIDTH as u8) as usize;
                 let current = self.buffer[y][x];
-                pixel_overwritten = current != (bit == 1);
 
-                self.buffer[y][x] = bit == 1;
+                let bit = (block >> (7 - x_offset)) & 1 == 1;
+                let new = bit ^ current;
+
+                pixel_overwritten = current != new;
+
+                self.buffer[y][x] = new;
             }
         }
         self.flush();
@@ -218,16 +327,19 @@ impl<'a> Display<'a> {
         self.renderer.set_draw_color(Color::RGB(0xFF, 0xFF, 0xFF));
 
         for (i, row) in self.buffer.iter().enumerate() {
+            print!("|");
             for (j, val) in row.iter().enumerate() {
+                if *val { print!("*") } else { print!(" ") }
                 if *val {
-                    println!("{} {}", i, j);
                     let border_rect = Rect::new(i as i32, j as i32, ENLARGEMENT_FACTOR as u32, ENLARGEMENT_FACTOR as u32).unwrap().unwrap();
                     self.renderer.draw_rect(border_rect);
                     self.renderer.fill_rect(border_rect);
                 }
             }
+            print!("|\n")
         }
 
+        // sleep(Duration::from_secs(5));
         self.renderer.present();
     }
 }
