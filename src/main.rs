@@ -1,17 +1,15 @@
-extern crate sdl2;
+extern crate piston_window;
 extern crate rand;
 use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::fmt;
 
-use sdl2::render;
-use sdl2::video;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
+use piston_window::*;
 
 use std::thread::sleep;
 use std::time::Duration;
+use std::io;
 
 use rand::Rng;
 use rand::distributions::{IndependentSample, Range};
@@ -22,17 +20,27 @@ fn main() {
     let mut game_data = Vec::new();
     file.read_to_end(&mut game_data).expect("Failure to read file");
 
-
+    let window_dimensions = [(DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32, (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32];
+    let mut window: PistonWindow = WindowSettings::new("Hello Piston!", window_dimensions).exit_on_esc(true).build().unwrap();
     let mut computer = Chip8::new(game_data);
-    computer.run();
+    for e in window {
+        if let Some(r) = e.render_args() {
+            computer.display.flush(&e);
+        }
+
+        if let Some(u) = e.update_args() {
+            computer.cycle(u.dt);
+        }
+    }
 }
 
 const NUM_GENERAL_PURPOSE_REGS: usize = 16;
 const MEMORY_SIZE: usize = 4 * 1024;
 const NUM_STACK_FRAMES: usize = 16;
 const PROGRAM_CODE_OFFSET: usize = 0x200;
+const CLOCK_RATE: f64 = 600.0;
 
-struct Chip8<'a> {
+struct Chip8 {
     regs: [u8; NUM_GENERAL_PURPOSE_REGS],
     i_reg: u16,
     delay_timer_reg: u8,
@@ -41,10 +49,10 @@ struct Chip8<'a> {
     program_counter_reg: u16,
     memory: [u8; MEMORY_SIZE],
     stack: [u16; NUM_STACK_FRAMES],
-    display: Box<Display<'a>>,
+    display: Box<Display>,
 }
-impl<'a> Chip8<'a> {
-    fn new(program: Vec<u8>) -> Chip8<'a> {
+impl Chip8 {
+    fn new(program: Vec<u8>) -> Chip8 {
         let mut memory = [0; MEMORY_SIZE];
         //TODO: do this more efficiently
         for (i, byte) in program.iter().enumerate() {
@@ -53,9 +61,7 @@ impl<'a> Chip8<'a> {
         for (i, byte) in SPRITES.iter().enumerate() {
             memory[i] = byte.clone();
         }
-        let sdl_context = sdl2::init().unwrap();
-        let video_subsystem = sdl_context.video().unwrap();
-        let display = Box::new(Display::new(video_subsystem));
+        let display = Box::new(Display::new());
 
         Chip8 {
             regs: [0; NUM_GENERAL_PURPOSE_REGS],
@@ -70,10 +76,11 @@ impl<'a> Chip8<'a> {
         }
     }
 
-    fn run(&mut self) {
-        loop {
+    fn cycle(&mut self, dt: f64) {
+        let num_instructions = (dt * CLOCK_RATE).round() as u64;
+        for _ in 1..num_instructions {
             let instruction = self.instruction();
-            println!("{:x}",instruction.value);
+            // println!("{:x}",instruction.value);
             self.program_counter_reg = self.run_instruction(instruction);
         }
     }
@@ -83,9 +90,9 @@ impl<'a> Chip8<'a> {
             0x0 => {
                 match instruction.ooox() {
                     0xe => {
+                        let addr = self.stack[self.stack_pointer_reg as usize];
                         self.stack_pointer_reg -= 1;
-                        // TODO: make stack and actual stack
-                        self.stack[0] + 2
+                        addr + 2
                     }
                     _ => panic!("Unrecognized instruction {:x}", instruction.value)
                 }
@@ -96,15 +103,22 @@ impl<'a> Chip8<'a> {
             0x2 => {
                 let addr = instruction.oxxx();
                 self.stack_pointer_reg += 1;
-                // TODO: make stack and actual stack
-                println!("FIX THE SUBROUTINE CALLS");
-                self.stack[0] = self.program_counter_reg;
-                addr
+                self.stack[self.stack_pointer_reg as usize] = self.program_counter_reg;
+                addr + 2
             },
             0x3 => {
                 let reg_number = instruction.oxoo();
                 let value = instruction.ooxx();
                 if self.read_reg(reg_number) == value {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
+                }
+            },
+            0x4 => {
+                let reg_value = self.read_reg(instruction.oxoo());
+                let value = instruction.ooxx();
+                if reg_value != value {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
@@ -119,9 +133,46 @@ impl<'a> Chip8<'a> {
             },
             0x7 => {
                 let reg_number = instruction.oxoo();
-                let value = instruction.ooxx();
+                let reg_value = self.read_reg(reg_number);
+                let value = instruction.ooxx().wrapping_add(reg_value);
                 self.load_reg(reg_number, value);
                 self.program_counter_reg + 2
+            },
+            0x8 => {
+                match instruction.ooox() {
+                    0x0 => {
+                        let value = self.read_reg(instruction.ooxo());
+                        self.load_reg(instruction.oxoo(), value);
+                        self.program_counter_reg + 2
+                    },
+                    0x2 => {
+                        let first = self.read_reg(instruction.oxoo());
+                        let second = self.read_reg(instruction.ooxo());
+                        self.load_reg(instruction.oxoo(), first & second);
+                        self.program_counter_reg + 2
+                    },
+                    0x4 => {
+                        //8xy4 - ADD Vx, Vy
+                        //Set Vx = Vx + Vy, set VF = carry.
+                        //The values of Vx and Vy are added together. If the result is greater than
+                        //8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits
+                        //  of the result are kept, and stored in Vx.
+                        let first = self.read_reg(instruction.oxoo()) as u16;
+                        let second = self.read_reg(instruction.ooxo()) as u16;
+                        let answer = first + second;
+                        self.load_reg(0xF, (answer > 255) as u8);
+                        self.load_reg(instruction.oxoo(), answer as u8);
+                        self.program_counter_reg + 2
+                    },
+                    0x5 => {
+                        let first = self.read_reg(instruction.oxoo());
+                        let second = self.read_reg(instruction.ooxo());
+                        self.load_reg(0xF, (first > second) as u8);
+                        self.load_reg(instruction.oxoo(), first.wrapping_sub(second));
+                        self.program_counter_reg + 2
+                    },
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                }
             },
             0xa => {
                 // load reg i with the value oxxx
@@ -141,16 +192,25 @@ impl<'a> Chip8<'a> {
             0xd => {
                 // load ooox bytes to the screen starting at coor oxoo,ooxo with the sprite located
                 // at memory location stored in reg i
-                let x = instruction.oxoo();
-                let y = instruction.ooxo();
+                let x = self.read_reg(instruction.oxoo());
+                let y = self.read_reg(instruction.ooxo());
                 let n = instruction.ooox();
                 let i = self.i_reg;
                 let from = i as usize;
                 let to = from + (n as usize);
 
-                let overwritten = self.display.draw(x, y, &self.memory[from..to]);
-                self.regs[0xF] = if overwritten { 1 } else { 0 };
+                self.regs[0xF] = self.display.draw(x, y, &self.memory[from..to]) as u8;
+                // for row in self.display.buffer.iter() {
+                //     for n in row.iter() {
+                //         print!("{} ", *n as u8)
+                //     }
+                //     println!("")
+                // }
                 self.program_counter_reg + 2
+            },
+            0xe => {
+                // if self.pump.keyboard_state().pressed_scancodes().any(|sc| sc == Scancode::Up) {
+                    self.program_counter_reg + 4
             },
             0xF => {
                 match instruction.ooxx() {
@@ -162,6 +222,10 @@ impl<'a> Chip8<'a> {
                     },
                     0x15 => {
                         //TODO set timer
+                        self.program_counter_reg + 2
+                    },
+                    0x18 => {
+                        //TODO: set sound timer
                         self.program_counter_reg + 2
                     },
                     0x29 => {
@@ -181,11 +245,9 @@ impl<'a> Chip8<'a> {
                     0x65 => {
                         let highest_reg = instruction.oxoo();
                         let i = self.i_reg;
-                        let mut offset = 0;
-                        for reg_number in 1..(highest_reg + 1) {
-                            let value = self.memory[(i + offset) as usize];
+                        for reg_number in 0..highest_reg {
+                            let value = self.memory[(i + reg_number as u16) as usize];
                             self.load_reg(reg_number, value);
-                            offset += 1;
                         }
                         self.program_counter_reg + 2
                     },
@@ -214,7 +276,7 @@ impl<'a> Chip8<'a> {
     }
 }
 
-impl <'a> fmt::Debug for Chip8<'a> {
+impl<'a> fmt::Debug for Chip8 {
      fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
          write!(f, "CPU {{ regs: {:?}, i_reg: {}, program_counter_reg: {} }}", self.regs, self.i_reg, self.program_counter_reg)
      }
@@ -264,35 +326,31 @@ const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
 const ENLARGEMENT_FACTOR: usize = 20;
 const SPRITES: [u8; 80] =
-    [0xF0, 0x90, 0x90, 0x90, 0xF0, 0x20, 0x60, 0x20, 0x20, 0x70,
-     0xF0, 0x10, 0xF0, 0x80, 0xF0, 0xF0, 0x10, 0xF0, 0x10, 0xF0,
-     0x90, 0x90, 0xF0, 0x10, 0x10, 0xF0, 0x80, 0xF0, 0x10, 0xF0,
-     0xF0, 0x80, 0xF0, 0x90, 0xF0, 0xF0, 0x10, 0x20, 0x40, 0x40,
-     0xF0, 0x90, 0xF0, 0x90, 0xF0, 0xF0, 0x90, 0xF0, 0x10, 0xF0,
-     0xF0, 0x90, 0xF0, 0x90, 0x90, 0xE0, 0x90, 0xE0, 0x90, 0xE0,
-     0xF0, 0x80, 0x80, 0x80, 0xF0, 0xE0, 0x90, 0x90, 0x90, 0xE0,
-     0xF0, 0x80, 0xF0, 0x80, 0xF0, 0xF0, 0x80, 0xF0, 0x80, 0x80];
+    [0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+     0x20, 0x60, 0x20, 0x20, 0x70, // 1
+     0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+     0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+     0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+     0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+     0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+     0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+     0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+     0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+     0xF0, 0x90, 0xF0, 0x90, 0x90, // a
+     0xE0, 0x90, 0xE0, 0x90, 0xE0, // b
+     0xF0, 0x80, 0x80, 0x80, 0xF0, // c
+     0xE0, 0x90, 0x90, 0x90, 0xE0, // d
+     0xF0, 0x80, 0xF0, 0x80, 0xF0, // e
+     0xF0, 0x80, 0xF0, 0x80, 0x80];// f
 
-struct Display<'a> {
-    renderer: render::Renderer<'a>,
+struct Display {
     buffer: [[bool; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
 }
 
-impl<'a> Display<'a> {
-    fn window(video_subsystem: sdl2::VideoSubsystem) -> video::Window {
-        video_subsystem.window("Rust 8", (DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32, (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32)
-            .position_centered().opengl().build().unwrap()
-    }
+impl Display {
 
-    fn renderer<'b>(window: video::Window) -> render::Renderer<'b> {
-        window.renderer().build().unwrap()
-    }
-
-    fn new<'b>(video_subsystem: sdl2::VideoSubsystem) -> Display<'b> {
-        let window = Display::window(video_subsystem);
-        let renderer = Display::renderer(window);
+    fn new() -> Display {
         Display {
-            renderer: renderer,
             buffer: [[false;DISPLAY_WIDTH];DISPLAY_HEIGHT]
         }
     }
@@ -314,33 +372,35 @@ impl<'a> Display<'a> {
                 self.buffer[y][x] = new;
             }
         }
-        self.flush();
         pixel_overwritten
     }
 
     fn clear(&mut self) {
-        self.renderer.clear();
     }
 
-    fn flush(&mut self) {
-        self.clear();
-        self.renderer.set_draw_color(Color::RGB(0xFF, 0xFF, 0xFF));
+    fn flush(&mut self, window: &PistonWindow) {
+        window.draw_2d(|c, g| {
+            clear(color::BLACK, g);
 
-        for (i, row) in self.buffer.iter().enumerate() {
-            print!("|");
-            for (j, val) in row.iter().enumerate() {
-                if *val { print!("*") } else { print!(" ") }
-                if *val {
-                    let border_rect = Rect::new(i as i32, j as i32, ENLARGEMENT_FACTOR as u32, ENLARGEMENT_FACTOR as u32).unwrap().unwrap();
-                    self.renderer.draw_rect(border_rect);
-                    self.renderer.fill_rect(border_rect);
+            for (i, row) in self.buffer.iter().enumerate() {
+                for (j, val) in row.iter().enumerate() {
+                    if *val {
+                        let dimensions = [(j * ENLARGEMENT_FACTOR) as f64, (i * ENLARGEMENT_FACTOR) as f64, ENLARGEMENT_FACTOR as f64, ENLARGEMENT_FACTOR as f64];
+                        Rectangle::new(color::WHITE).draw(dimensions, &c.draw_state, c.transform, g);
+                    }
                 }
             }
-            print!("|\n")
-        }
-
-        // sleep(Duration::from_secs(5));
-        self.renderer.present();
+        })
     }
+
+    // fn flush(&mut self) {
+    //     for (i, row) in self.buffer.iter().enumerate() {
+    //         print!("|");
+    //         for (j, val) in row.iter().enumerate() {
+    //             if *val { print!("*") } else { print!(".") }
+    //         }
+    //         print!("|\n")
+    //     }
+    // }
 }
 
