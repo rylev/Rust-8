@@ -17,8 +17,9 @@ fn main() {
     file.read_to_end(&mut game_data).expect("Failure to read file");
 
     let window_dimensions = [(DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32, (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32];
-    let window: PistonWindow = WindowSettings::new("Hello Piston!", window_dimensions).exit_on_esc(true).build().unwrap();
+    let window: PistonWindow = WindowSettings::new("Chip 8 Emulator", window_dimensions).exit_on_esc(true).build().unwrap();
     let mut computer = Chip8::new(game_data);
+
     for e in window {
         if let Some(_) = e.render_args() {
             computer.display.flush(&e);
@@ -95,14 +96,13 @@ impl Chip8 {
         }
     }
 
-    fn cycle(&mut self, dt: f64) {
-        let num_instructions = (dt * CLOCK_RATE).round() as u64;
+    fn cycle(&mut self, delta_time: f64) {
+        let num_instructions = (delta_time * CLOCK_RATE).round() as u64;
         for _ in 1..num_instructions {
             if self.delay_timer_reg > 0 {
                 self.delay_timer_reg -= 1;
             }
             let instruction = self.instruction();
-            // println!("{:x}",instruction.value);
             self.program_counter_reg = self.run_instruction(instruction);
         }
     }
@@ -179,7 +179,10 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     },
                     0x3 => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        let first = self.read_reg(instruction.oxoo());
+                        let second = self.read_reg(instruction.ooxo());
+                        self.load_reg(instruction.oxoo(), first | second);
+                        self.program_counter_reg + 2
                     },
                     0x4 => {
                         //8xy4 - ADD Vx, Vy
@@ -430,37 +433,40 @@ impl Display {
                 let bit = (block >> (7 - x_offset)) & 1 == 1;
                 let new = bit ^ current;
 
-                pixel_overwritten = current != new;
-
                 self.buffer[y][x] = new;
+
+                if current && !new {
+                    pixel_overwritten = true;
+                }
             }
         }
         pixel_overwritten
     }
 
     fn flush(&mut self, window: &PistonWindow) {
-        window.draw_2d(|c, g| {
-            clear(color::BLACK, g);
+        window.draw_2d(|context, graphics| {
+            piston_window::clear(color::BLACK, graphics);
 
             for (i, row) in self.buffer.iter().enumerate() {
                 for (j, val) in row.iter().enumerate() {
                     if *val {
                         let dimensions = [(j * ENLARGEMENT_FACTOR) as f64, (i * ENLARGEMENT_FACTOR) as f64, ENLARGEMENT_FACTOR as f64, ENLARGEMENT_FACTOR as f64];
-                        Rectangle::new(color::WHITE).draw(dimensions, &c.draw_state, c.transform, g);
+                        Rectangle::new(color::WHITE).draw(dimensions, &context.draw_state, context.transform, graphics);
                     }
                 }
             }
         })
     }
 
-    // fn flush(&mut self) {
-    //     for (i, row) in self.buffer.iter().enumerate() {
-    //         print!("|");
-    //         for (j, val) in row.iter().enumerate() {
-    //             if *val { print!("*") } else { print!(".") }
-    //         }
-    //         print!("|\n")
-    //     }
-    // }
+    #[allow(dead_code)]
+    fn debug(&mut self) {
+        for row in self.buffer.iter() {
+            print!("|");
+            for val in row.iter() {
+                if *val { print!("*") } else { print!(".") }
+            }
+            println!("|")
+        }
+    }
 }
 
