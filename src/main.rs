@@ -10,14 +10,19 @@ use piston_window::*;
 
 use rand::distributions::{IndependentSample, Range};
 
+const WINDOW_DIMENSIONS : [u32;2] = [(DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32,
+                                     (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32];
+
 fn main() {
     let file_name = env::args().nth(1).expect("Must give game name as first file");
     let mut file = File::open(file_name).expect("There was an issue opening the file");
     let mut game_data = Vec::new();
     file.read_to_end(&mut game_data).expect("Failure to read file");
 
-    let window_dimensions = [(DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32, (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32];
-    let window: PistonWindow = WindowSettings::new("Chip 8 Emulator", window_dimensions).exit_on_esc(true).build().unwrap();
+    let window: PistonWindow = WindowSettings::new("Chip 8 Emulator", WINDOW_DIMENSIONS)
+                                   .exit_on_esc(true)
+                                   .build()
+                                   .unwrap();
     let mut computer = Chip8::new(game_data);
 
     for e in window {
@@ -30,28 +35,24 @@ fn main() {
         }
 
         if let Some(Button::Keyboard(key)) = e.release_args() {
-            if let Some(index) = key_value(&key) {
-                computer.keyboard[index as usize] = false;
+            if let Some(key_value) = key_value(&key) {
+                computer.handle_key_release(key_value);
             }
         }
 
         if let Some(Button::Keyboard(key)) = e.press_args() {
-            if let Some(index) = key_value(&key) {
-                computer.keyboard[index as usize] = true;
-                if let Some(reg) = computer.wait_for_key {
-                    computer.load_reg(reg, index as u8);
-                }
-                computer.wait_for_key = None;
+            if let Some(key_value) = key_value(&key) {
+                computer.handle_key_press(key_value);
             }
         }
     }
 }
 
-fn key_value(key: &Key) -> Option<i32> {
+fn key_value(key: &Key) -> Option<u8> {
     if key.code() >= 48 && key.code() <= 57 {
-        Some(key.code() - 48)
+        Some((key.code() - 48) as u8)
     } else if key.code() >= 97 && key.code() <= 102 {
-        Some(key.code() - 97 + 9)
+        Some((key.code() - 97 + 10) as u8)
     } else {
         None
     }
@@ -73,14 +74,14 @@ struct Chip8 {
     program_counter_reg: u16,
     memory: [u8; MEMORY_SIZE],
     stack: [u16; NUM_STACK_FRAMES],
-    wait_for_key: Option<u8>,
+    key_to_wait_for: Option<u8>,
     keyboard: [bool; NUM_KEYS],
     display: Box<Display>,
 }
 impl Chip8 {
     fn new(program: Vec<u8>) -> Chip8 {
         let mut memory = [0; MEMORY_SIZE];
-        //TODO: do this more efficiently
+        // TODO: do this more efficiently
         for (i, byte) in program.iter().enumerate() {
             memory[PROGRAM_CODE_OFFSET + i] = byte.clone();
         }
@@ -98,7 +99,7 @@ impl Chip8 {
             program_counter_reg: PROGRAM_CODE_OFFSET as u16,
             memory: memory,
             stack: [0; NUM_STACK_FRAMES],
-            wait_for_key: None,
+            key_to_wait_for: None,
             keyboard: [false; NUM_KEYS],
             display: display,
         }
@@ -111,7 +112,7 @@ impl Chip8 {
                 self.delay_timer_reg -= 1;
             }
 
-            if self.wait_for_key == None{
+            if self.key_to_wait_for == None {
                 let instruction = self.instruction();
                 self.program_counter_reg = self.run_instruction(instruction);
             }
@@ -130,19 +131,17 @@ impl Chip8 {
                     0xE0 => {
                         self.display.clear();
                         self.program_counter_reg + 2
-                    },
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                    }
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
                 }
-            },
-            0x1 => {
-                instruction.oxxx()
             }
+            0x1 => instruction.oxxx(),
             0x2 => {
                 let addr = instruction.oxxx();
                 self.stack_pointer_reg += 1;
                 self.stack[(self.stack_pointer_reg - 1) as usize] = self.program_counter_reg;
                 addr
-            },
+            }
             0x3 => {
                 let reg_value = self.read_reg(instruction.oxoo());
                 let value = instruction.ooxx();
@@ -151,7 +150,7 @@ impl Chip8 {
                 } else {
                     self.program_counter_reg + 2
                 }
-            },
+            }
             0x4 => {
                 let reg_value = self.read_reg(instruction.oxoo());
                 let value = instruction.ooxx();
@@ -160,7 +159,7 @@ impl Chip8 {
                 } else {
                     self.program_counter_reg + 2
                 }
-            },
+            }
             0x5 => {
                 let first = instruction.oxoo();
                 let second = instruction.oxoo();
@@ -175,41 +174,41 @@ impl Chip8 {
                 let value = instruction.ooxx();
                 self.load_reg(reg_number, value);
                 self.program_counter_reg + 2
-            },
+            }
             0x7 => {
                 let reg_number = instruction.oxoo();
                 let reg_value = self.read_reg(reg_number);
                 let value = instruction.ooxx().wrapping_add(reg_value);
                 self.load_reg(reg_number, value);
                 self.program_counter_reg + 2
-            },
+            }
             0x8 => {
                 match instruction.ooox() {
                     0x0 => {
                         let value = self.read_reg(instruction.ooxo());
                         self.load_reg(instruction.oxoo(), value);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x1 => {
                         panic!("Not yet implemeneted: {:x}", instruction.value);
-                    },
+                    }
                     0x2 => {
                         let first = self.read_reg(instruction.oxoo());
                         let second = self.read_reg(instruction.ooxo());
                         self.load_reg(instruction.oxoo(), first & second);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x3 => {
                         let first = self.read_reg(instruction.oxoo());
                         let second = self.read_reg(instruction.ooxo());
                         self.load_reg(instruction.oxoo(), first | second);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x4 => {
-                        //8xy4 - ADD Vx, Vy
-                        //Set Vx = Vx + Vy, set VF = carry.
-                        //The values of Vx and Vy are added together. If the result is greater than
-                        //8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits
+                        // 8xy4 - ADD Vx, Vy
+                        // Set Vx = Vx + Vy, set VF = carry.
+                        // The values of Vx and Vy are added together. If the result is greater than
+                        // 8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits
                         //  of the result are kept, and stored in Vx.
                         let first = self.read_reg(instruction.oxoo()) as u16;
                         let second = self.read_reg(instruction.ooxo()) as u16;
@@ -217,32 +216,32 @@ impl Chip8 {
                         self.load_reg(0xF, (answer > 255) as u8);
                         self.load_reg(instruction.oxoo(), answer as u8);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x5 => {
                         let first = self.read_reg(instruction.oxoo());
                         let second = self.read_reg(instruction.ooxo());
                         self.load_reg(0xF, (first > second) as u8);
                         self.load_reg(instruction.oxoo(), first.wrapping_sub(second));
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x6 => {
                         let value = self.read_reg(instruction.ooxo());
                         self.load_reg(0xF, value & 0b1);
                         self.load_reg(instruction.oxoo(), value >> 1);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x7 => {
                         panic!("Not yet implemeneted: {:x}", instruction.value);
-                    },
+                    }
                     0xE => {
                         let value = self.read_reg(instruction.ooxo());
                         self.load_reg(0xF, value >> 7);
                         self.load_reg(instruction.oxoo(), value << 1);
                         self.program_counter_reg + 2
-                    },
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                    }
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
                 }
-            },
+            }
             0x9 => {
                 let first = instruction.oxoo();
                 let second = instruction.oxoo();
@@ -251,24 +250,24 @@ impl Chip8 {
                 } else {
                     self.program_counter_reg + 2
                 }
-            },
+            }
             0xA => {
                 // load reg i with the value oxxx
                 self.i_reg = instruction.oxxx();
                 self.program_counter_reg + 2
-            },
+            }
             0xB => {
                 panic!("Not yet implemeneted: {:x}", instruction.value);
-            },
+            }
             0xC => {
                 let reg_number = instruction.oxoo();
                 let value = instruction.ooxx();
                 let rng = &mut rand::thread_rng();
-                let rand_number = Range::new(0,255).ind_sample(rng);
+                let rand_number = Range::new(0, 255).ind_sample(rng);
 
                 self.load_reg(reg_number, rand_number & value);
                 self.program_counter_reg + 2
-            },
+            }
             0xD => {
                 // load ooox bytes to the screen starting at coor oxoo,ooxo with the sprite located
                 // at memory location stored in reg i
@@ -281,7 +280,7 @@ impl Chip8 {
 
                 self.regs[0xF] = self.display.draw(x, y, &self.memory[from..to]) as u8;
                 self.program_counter_reg + 2
-            },
+            }
             0xE => {
                 let value = self.read_reg(instruction.oxoo());
                 let pressed = self.keyboard[value as usize];
@@ -292,17 +291,17 @@ impl Chip8 {
                         } else {
                             self.program_counter_reg + 2
                         }
-                    },
+                    }
                     0xA1 => {
                         if pressed {
                             self.program_counter_reg + 2
                         } else {
                             self.program_counter_reg + 4
                         }
-                    },
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                    }
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
                 }
-            },
+            }
             0xF => {
                 match instruction.ooxx() {
                     0x07 => {
@@ -310,20 +309,20 @@ impl Chip8 {
                         let delay_value = self.delay_timer_reg;
                         self.load_reg(reg_number, delay_value);
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x0A => {
-                        self.wait_for_key = Some(instruction.oxoo());
+                        self.key_to_wait_for = Some(instruction.oxoo());
                         self.program_counter_reg + 2
                     }
                     0x15 => {
                         let value = self.read_reg(instruction.oxoo());
                         self.delay_timer_reg = value;
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x18 => {
-                        //TODO: set sound timer
+                        // TODO: set sound timer
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x1E => {
                         let value = self.read_reg(instruction.oxoo()) as u16;
                         self.i_reg = self.i_reg + value;
@@ -334,7 +333,7 @@ impl Chip8 {
                         let digit = self.read_reg(reg);
                         self.i_reg = (digit * 5) as u16;
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x33 => {
                         let reg_number = instruction.oxoo();
                         let value = self.read_reg(reg_number);
@@ -342,13 +341,14 @@ impl Chip8 {
                         self.memory[(self.i_reg + 1) as usize] = (value / 10) % 10;
                         self.memory[(self.i_reg + 2) as usize] = value % 10;
                         self.program_counter_reg + 2
-                    },
+                    }
                     0x55 => {
                         let highest_reg = instruction.oxoo();
 
                         let i = self.i_reg;
                         for reg_number in 0..(highest_reg + 1) {
-                            self.memory[(i + reg_number as u16) as usize] = self.read_reg(reg_number);
+                            self.memory[(i + reg_number as u16) as usize] =
+                                self.read_reg(reg_number);
                         }
                         self.program_counter_reg + 2
                     }
@@ -360,12 +360,24 @@ impl Chip8 {
                             self.load_reg(reg_number, value);
                         }
                         self.program_counter_reg + 2
-                    },
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value)
+                    }
+                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
                 }
-            },
-            _ => panic!("Unrecognized instruction {:x}", instruction.value)
+            }
+            _ => panic!("Unrecognized instruction {:x}", instruction.value),
         }
+    }
+
+    fn handle_key_press(&mut self, key: u8) {
+        self.keyboard[key as usize] = true;
+        if let Some(reg) = self.key_to_wait_for {
+            self.load_reg(reg, key);
+            self.key_to_wait_for = None;
+        }
+    }
+
+    fn handle_key_release(&mut self, key: u8) {
+        self.keyboard[key as usize] = false;
     }
 
     fn instruction(&self) -> Instruction {
@@ -385,18 +397,22 @@ impl Chip8 {
 }
 
 impl<'a> fmt::Debug for Chip8 {
-     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-         write!(f, "CPU {{ regs: {:?}, i_reg: {}, program_counter_reg: {} }}", self.regs, self.i_reg, self.program_counter_reg)
-     }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f,
+               "CPU {{ regs: {:?}, i_reg: {}, program_counter_reg: {} }}",
+               self.regs,
+               self.i_reg,
+               self.program_counter_reg)
+    }
 }
 
-struct Instruction{
-    value: u16
+struct Instruction {
+    value: u16,
 }
 
 impl Instruction {
     fn new(value: u16) -> Instruction {
-        Instruction{value: value}
+        Instruction { value: value }
     }
 
     #[inline(always)]
@@ -411,7 +427,7 @@ impl Instruction {
 
     #[inline(always)]
     fn ooxo(&self) -> u8 {
-        ((self.value >> 4) & 0xF)  as u8
+        ((self.value >> 4) & 0xF) as u8
     }
 
     #[inline(always)]
@@ -433,34 +449,24 @@ impl Instruction {
 const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
 const ENLARGEMENT_FACTOR: usize = 20;
-const SPRITES: [u8; 80] =
-    [0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-     0x20, 0x60, 0x20, 0x20, 0x70, // 1
-     0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-     0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-     0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-     0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-     0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-     0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-     0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-     0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-     0xF0, 0x90, 0xF0, 0x90, 0x90, // a
-     0xE0, 0x90, 0xE0, 0x90, 0xE0, // b
-     0xF0, 0x80, 0x80, 0x80, 0xF0, // c
-     0xE0, 0x90, 0x90, 0x90, 0xE0, // d
-     0xF0, 0x80, 0xF0, 0x80, 0xF0, // e
-     0xF0, 0x80, 0xF0, 0x80, 0x80];// f
+const SPRITES: [u8; 80] = [0xF0, 0x90, 0x90, 0x90, 0xF0 /* 0 */, 0x20, 0x60, 0x20, 0x20,
+                           0x70 /* 1 */, 0xF0, 0x10, 0xF0, 0x80, 0xF0 /* 2 */, 0xF0, 0x10,
+                           0xF0, 0x10, 0xF0 /* 3 */, 0x90, 0x90, 0xF0, 0x10, 0x10 /* 4 */,
+                           0xF0, 0x80, 0xF0, 0x10, 0xF0 /* 5 */, 0xF0, 0x80, 0xF0, 0x90,
+                           0xF0 /* 6 */, 0xF0, 0x10, 0x20, 0x40, 0x40 /* 7 */, 0xF0, 0x90,
+                           0xF0, 0x90, 0xF0 /* 8 */, 0xF0, 0x90, 0xF0, 0x10, 0xF0 /* 9 */,
+                           0xF0, 0x90, 0xF0, 0x90, 0x90 /* a */, 0xE0, 0x90, 0xE0, 0x90,
+                           0xE0 /* b */, 0xF0, 0x80, 0x80, 0x80, 0xF0 /* c */, 0xE0, 0x90,
+                           0x90, 0x90, 0xE0 /* d */, 0xF0, 0x80, 0xF0, 0x80, 0xF0 /* e */,
+                           0xF0, 0x80, 0xF0, 0x80, 0x80];// f
 
 struct Display {
     buffer: [[bool; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
 }
 
 impl Display {
-
     fn new() -> Display {
-        Display {
-            buffer: [[false;DISPLAY_WIDTH];DISPLAY_HEIGHT]
-        }
+        Display { buffer: [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT] }
     }
 
     fn draw(&mut self, starting_x: u8, starting_y: u8, memory: &[u8]) -> bool {
@@ -496,8 +502,12 @@ impl Display {
             for (i, row) in self.buffer.iter().enumerate() {
                 for (j, val) in row.iter().enumerate() {
                     if *val {
-                        let dimensions = [(j * ENLARGEMENT_FACTOR) as f64, (i * ENLARGEMENT_FACTOR) as f64, ENLARGEMENT_FACTOR as f64, ENLARGEMENT_FACTOR as f64];
-                        Rectangle::new(color::WHITE).draw(dimensions, &context.draw_state, context.transform, graphics);
+                        let dimensions = [(j * ENLARGEMENT_FACTOR) as f64,
+                                          (i * ENLARGEMENT_FACTOR) as f64,
+                                          ENLARGEMENT_FACTOR as f64,
+                                          ENLARGEMENT_FACTOR as f64];
+                        Rectangle::new(color::WHITE)
+                            .draw(dimensions, &context.draw_state, context.transform, graphics);
                     }
                 }
             }
@@ -509,10 +519,13 @@ impl Display {
         for row in self.buffer.iter() {
             print!("|");
             for val in row.iter() {
-                if *val { print!("*") } else { print!(".") }
+                if *val {
+                    print!("*")
+                } else {
+                    print!(".")
+                }
             }
             println!("|")
         }
     }
 }
-
