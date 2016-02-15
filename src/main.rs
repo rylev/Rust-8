@@ -30,24 +30,30 @@ fn main() {
         }
 
         if let Some(Button::Keyboard(key)) = e.release_args() {
-            set_key(&mut computer, &key, false)
+            if let Some(index) = key_value(&key) {
+                computer.keyboard[index as usize] = false;
+            }
         }
 
         if let Some(Button::Keyboard(key)) = e.press_args() {
-            set_key(&mut computer, &key, true)
+            if let Some(index) = key_value(&key) {
+                computer.keyboard[index as usize] = true;
+                if let Some(reg) = computer.wait_for_key {
+                    computer.load_reg(reg, index as u8);
+                }
+                computer.wait_for_key = None;
+            }
         }
     }
 }
 
-fn set_key(computer: &mut Chip8, key: &Key, value: bool) {
+fn key_value(key: &Key) -> Option<i32> {
     if key.code() >= 48 && key.code() <= 57 {
-        let index = (key.code() - 48) as usize;
-        computer.keyboard[index] = value;
-    }
-
-    if key.code() >= 97 && key.code() <= 102 {
-        let index = (key.code() - 97 + 9) as usize;
-        computer.keyboard[index] = value;
+        Some(key.code() - 48)
+    } else if key.code() >= 97 && key.code() <= 102 {
+        Some(key.code() - 97 + 9)
+    } else {
+        None
     }
 }
 
@@ -67,6 +73,7 @@ struct Chip8 {
     program_counter_reg: u16,
     memory: [u8; MEMORY_SIZE],
     stack: [u16; NUM_STACK_FRAMES],
+    wait_for_key: Option<u8>,
     keyboard: [bool; NUM_KEYS],
     display: Box<Display>,
 }
@@ -91,6 +98,7 @@ impl Chip8 {
             program_counter_reg: PROGRAM_CODE_OFFSET as u16,
             memory: memory,
             stack: [0; NUM_STACK_FRAMES],
+            wait_for_key: None,
             keyboard: [false; NUM_KEYS],
             display: display,
         }
@@ -102,8 +110,11 @@ impl Chip8 {
             if self.delay_timer_reg > 0 {
                 self.delay_timer_reg -= 1;
             }
-            let instruction = self.instruction();
-            self.program_counter_reg = self.run_instruction(instruction);
+
+            if self.wait_for_key == None{
+                let instruction = self.instruction();
+                self.program_counter_reg = self.run_instruction(instruction);
+            }
         }
     }
 
@@ -116,6 +127,10 @@ impl Chip8 {
                         self.stack_pointer_reg -= 1;
                         addr + 2
                     }
+                    0xE0 => {
+                        self.display.clear();
+                        self.program_counter_reg + 2
+                    },
                     _ => panic!("Unrecognized instruction {:x}", instruction.value)
                 }
             },
@@ -147,7 +162,13 @@ impl Chip8 {
                 }
             },
             0x5 => {
-                panic!("Not yet implemeneted: {:x}", instruction.value);
+                let first = instruction.oxoo();
+                let second = instruction.oxoo();
+                if first == second {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
+                }
             }
             0x6 => {
                 let reg_number = instruction.oxoo();
@@ -205,19 +226,31 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     },
                     0x6 => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        let value = self.read_reg(instruction.ooxo());
+                        self.load_reg(0xF, value & 0b1);
+                        self.load_reg(instruction.oxoo(), value >> 1);
+                        self.program_counter_reg + 2
                     },
                     0x7 => {
                         panic!("Not yet implemeneted: {:x}", instruction.value);
                     },
                     0xE => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        let value = self.read_reg(instruction.ooxo());
+                        self.load_reg(0xF, value >> 7);
+                        self.load_reg(instruction.oxoo(), value << 1);
+                        self.program_counter_reg + 2
                     },
                     _ => panic!("Unrecognized instruction {:x}", instruction.value)
                 }
             },
             0x9 => {
-                panic!("Not yet implemeneted: {:x}", instruction.value);
+                let first = instruction.oxoo();
+                let second = instruction.oxoo();
+                if first != second {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
+                }
             },
             0xA => {
                 // load reg i with the value oxxx
@@ -279,7 +312,8 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     },
                     0x0A => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        self.wait_for_key = Some(instruction.oxoo());
+                        self.program_counter_reg + 2
                     }
                     0x15 => {
                         let value = self.read_reg(instruction.oxoo());
@@ -291,7 +325,9 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     },
                     0x1E => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        let value = self.read_reg(instruction.oxoo()) as u16;
+                        self.i_reg = self.i_reg + value;
+                        self.program_counter_reg + 2
                     }
                     0x29 => {
                         let reg = instruction.oxoo();
@@ -308,7 +344,13 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     },
                     0x55 => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        let highest_reg = instruction.oxoo();
+
+                        let i = self.i_reg;
+                        for reg_number in 0..(highest_reg + 1) {
+                            self.memory[(i + reg_number as u16) as usize] = self.read_reg(reg_number);
+                        }
+                        self.program_counter_reg + 2
                     }
                     0x65 => {
                         let highest_reg = instruction.oxoo();
@@ -441,6 +483,10 @@ impl Display {
             }
         }
         pixel_overwritten
+    }
+
+    fn clear(&mut self) {
+        self.buffer = [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
     }
 
     fn flush(&mut self, window: &PistonWindow) {
