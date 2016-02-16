@@ -1,15 +1,21 @@
 extern crate piston_window;
 extern crate rand;
 
+mod display;
+mod instruction;
+
 use std::env;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
 
 use piston_window::*;
+use display::*;
+use instruction::Instruction;
 
 use rand::distributions::{IndependentSample, Range};
 
+const ENLARGEMENT_FACTOR: usize = 20;
 const WINDOW_DIMENSIONS : [u32;2] = [(DISPLAY_WIDTH * ENLARGEMENT_FACTOR) as u32,
                                      (DISPLAY_HEIGHT * ENLARGEMENT_FACTOR) as u32];
 
@@ -27,7 +33,7 @@ fn main() {
 
     for e in window {
         if let Some(_) = e.render_args() {
-            computer.display.flush(&e);
+            draw_screen(&computer.display, &e);
         }
 
         if let Some(u) = e.update_args() {
@@ -58,6 +64,25 @@ fn key_value(key: &Key) -> Option<u8> {
     }
 }
 
+fn draw_screen(display: &Display, window: &PistonWindow) {
+    window.draw_2d(|context, graphics| {
+        piston_window::clear(color::BLACK, graphics);
+
+        for (i, row) in display.get_buffer().iter().enumerate() {
+            for (j, val) in row.iter().enumerate() {
+                if *val {
+                    let dimensions = [(j * ENLARGEMENT_FACTOR) as f64,
+                    (i * ENLARGEMENT_FACTOR) as f64,
+                    ENLARGEMENT_FACTOR as f64,
+                    ENLARGEMENT_FACTOR as f64];
+                    Rectangle::new(color::WHITE)
+                        .draw(dimensions, &context.draw_state, context.transform, graphics);
+                }
+            }
+        }
+    })
+}
+
 const NUM_GENERAL_PURPOSE_REGS: usize = 16;
 const MEMORY_SIZE: usize = 4 * 1024;
 const NUM_STACK_FRAMES: usize = 16;
@@ -78,6 +103,7 @@ struct Chip8 {
     keyboard: [bool; NUM_KEYS],
     display: Box<Display>,
 }
+
 impl Chip8 {
     fn new(program: Vec<u8>) -> Chip8 {
         let mut memory = [0; MEMORY_SIZE];
@@ -88,7 +114,6 @@ impl Chip8 {
         for (i, byte) in SPRITES.iter().enumerate() {
             memory[i] = byte.clone();
         }
-        let display = Box::new(Display::new());
 
         Chip8 {
             regs: [0; NUM_GENERAL_PURPOSE_REGS],
@@ -101,12 +126,13 @@ impl Chip8 {
             stack: [0; NUM_STACK_FRAMES],
             key_to_wait_for: None,
             keyboard: [false; NUM_KEYS],
-            display: display,
+            display: Box::new(Display::new()),
         }
     }
 
-    fn cycle(&mut self, delta_time: f64) {
-        let num_instructions = (delta_time * CLOCK_RATE).round() as u64;
+    fn cycle(&mut self, seconds_since_last_cycle: f64) {
+        let num_instructions = (seconds_since_last_cycle * CLOCK_RATE).round() as u64;
+
         for _ in 1..num_instructions {
             if self.delay_timer_reg > 0 {
                 self.delay_timer_reg -= 1;
@@ -132,7 +158,7 @@ impl Chip8 {
                         self.display.clear();
                         self.program_counter_reg + 2
                     }
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
+                    _ => panic!("Unrecognized instruction {:x}", instruction),
                 }
             }
             0x1 => instruction.oxxx(),
@@ -190,7 +216,7 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     }
                     0x1 => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        panic!("Not yet implemeneted: {:x}", instruction);
                     }
                     0x2 => {
                         let first = self.read_reg(instruction.oxoo());
@@ -231,7 +257,7 @@ impl Chip8 {
                         self.program_counter_reg + 2
                     }
                     0x7 => {
-                        panic!("Not yet implemeneted: {:x}", instruction.value);
+                        panic!("Not yet implemeneted: {:x}", instruction);
                     }
                     0xE => {
                         let value = self.read_reg(instruction.ooxo());
@@ -239,7 +265,7 @@ impl Chip8 {
                         self.load_reg(instruction.oxoo(), value << 1);
                         self.program_counter_reg + 2
                     }
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
+                    _ => panic!("Unrecognized instruction {:x}", instruction),
                 }
             }
             0x9 => {
@@ -257,7 +283,7 @@ impl Chip8 {
                 self.program_counter_reg + 2
             }
             0xB => {
-                panic!("Not yet implemeneted: {:x}", instruction.value);
+                panic!("Not yet implemeneted: {:x}", instruction);
             }
             0xC => {
                 let reg_number = instruction.oxoo();
@@ -299,7 +325,7 @@ impl Chip8 {
                             self.program_counter_reg + 4
                         }
                     }
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
+                    _ => panic!("Unrecognized instruction {:x}", instruction),
                 }
             }
             0xF => {
@@ -361,10 +387,10 @@ impl Chip8 {
                         }
                         self.program_counter_reg + 2
                     }
-                    _ => panic!("Unrecognized instruction {:x}", instruction.value),
+                    _ => panic!("Unrecognized instruction {:x}", instruction),
                 }
             }
-            _ => panic!("Unrecognized instruction {:x}", instruction.value),
+            _ => panic!("Unrecognized instruction {:x}", instruction),
         }
     }
 
@@ -403,129 +429,5 @@ impl<'a> fmt::Debug for Chip8 {
                self.regs,
                self.i_reg,
                self.program_counter_reg)
-    }
-}
-
-struct Instruction {
-    value: u16,
-}
-
-impl Instruction {
-    fn new(value: u16) -> Instruction {
-        Instruction { value: value }
-    }
-
-    #[inline(always)]
-    fn xooo(&self) -> u8 {
-        ((self.value >> 12) & 0xF) as u8
-    }
-
-    #[inline(always)]
-    fn oxoo(&self) -> u8 {
-        ((self.value >> 8) & 0xF) as u8
-    }
-
-    #[inline(always)]
-    fn ooxo(&self) -> u8 {
-        ((self.value >> 4) & 0xF) as u8
-    }
-
-    #[inline(always)]
-    fn ooox(&self) -> u8 {
-        (self.value as u8) & 0xF
-    }
-
-    #[inline(always)]
-    fn ooxx(&self) -> u8 {
-        (self.value & 0xFF) as u8
-    }
-
-    #[inline(always)]
-    fn oxxx(&self) -> u16 {
-        self.value & 0xFFF
-    }
-}
-
-const DISPLAY_WIDTH: usize = 64;
-const DISPLAY_HEIGHT: usize = 32;
-const ENLARGEMENT_FACTOR: usize = 20;
-const SPRITES: [u8; 80] = [0xF0, 0x90, 0x90, 0x90, 0xF0 /* 0 */, 0x20, 0x60, 0x20, 0x20,
-                           0x70 /* 1 */, 0xF0, 0x10, 0xF0, 0x80, 0xF0 /* 2 */, 0xF0, 0x10,
-                           0xF0, 0x10, 0xF0 /* 3 */, 0x90, 0x90, 0xF0, 0x10, 0x10 /* 4 */,
-                           0xF0, 0x80, 0xF0, 0x10, 0xF0 /* 5 */, 0xF0, 0x80, 0xF0, 0x90,
-                           0xF0 /* 6 */, 0xF0, 0x10, 0x20, 0x40, 0x40 /* 7 */, 0xF0, 0x90,
-                           0xF0, 0x90, 0xF0 /* 8 */, 0xF0, 0x90, 0xF0, 0x10, 0xF0 /* 9 */,
-                           0xF0, 0x90, 0xF0, 0x90, 0x90 /* a */, 0xE0, 0x90, 0xE0, 0x90,
-                           0xE0 /* b */, 0xF0, 0x80, 0x80, 0x80, 0xF0 /* c */, 0xE0, 0x90,
-                           0x90, 0x90, 0xE0 /* d */, 0xF0, 0x80, 0xF0, 0x80, 0xF0 /* e */,
-                           0xF0, 0x80, 0xF0, 0x80, 0x80];// f
-
-struct Display {
-    buffer: [[bool; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
-}
-
-impl Display {
-    fn new() -> Display {
-        Display { buffer: [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT] }
-    }
-
-    fn draw(&mut self, starting_x: u8, starting_y: u8, memory: &[u8]) -> bool {
-        let mut pixel_overwritten = false;
-        for (y_offset, block) in memory.iter().enumerate() {
-            let y = ((starting_y + y_offset as u8) % DISPLAY_HEIGHT as u8) as usize;
-
-            for x_offset in 0..8 {
-                let x = ((starting_x + x_offset) % DISPLAY_WIDTH as u8) as usize;
-                let current = self.buffer[y][x];
-
-                let bit = (block >> (7 - x_offset)) & 1 == 1;
-                let new = bit ^ current;
-
-                self.buffer[y][x] = new;
-
-                if current && !new {
-                    pixel_overwritten = true;
-                }
-            }
-        }
-        pixel_overwritten
-    }
-
-    fn clear(&mut self) {
-        self.buffer = [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
-    }
-
-    fn flush(&mut self, window: &PistonWindow) {
-        window.draw_2d(|context, graphics| {
-            piston_window::clear(color::BLACK, graphics);
-
-            for (i, row) in self.buffer.iter().enumerate() {
-                for (j, val) in row.iter().enumerate() {
-                    if *val {
-                        let dimensions = [(j * ENLARGEMENT_FACTOR) as f64,
-                                          (i * ENLARGEMENT_FACTOR) as f64,
-                                          ENLARGEMENT_FACTOR as f64,
-                                          ENLARGEMENT_FACTOR as f64];
-                        Rectangle::new(color::WHITE)
-                            .draw(dimensions, &context.draw_state, context.transform, graphics);
-                    }
-                }
-            }
-        })
-    }
-
-    #[allow(dead_code)]
-    fn debug(&mut self) {
-        for row in self.buffer.iter() {
-            print!("|");
-            for val in row.iter() {
-                if *val {
-                    print!("*")
-                } else {
-                    print!(".")
-                }
-            }
-            println!("|")
-        }
     }
 }
