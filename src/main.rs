@@ -11,7 +11,7 @@ use std::io::Read;
 
 use piston_window::*;
 use display::*;
-use instruction::Instruction;
+use instruction::{Instruction,RawInstruction};
 
 use rand::distributions::{IndependentSample, Range};
 
@@ -140,247 +140,210 @@ impl Chip8 {
 
             if self.key_to_wait_for == None {
                 let instruction = self.instruction();
-                self.program_counter_reg = self.run_instruction(instruction);
+                self.program_counter_reg = self.run_instruction(&instruction);
             }
         }
     }
 
     fn run_instruction(&mut self, instruction: &Instruction) -> u16 {
-        match instruction {
-            ClearDisplay => {
+        match *instruction {
+            Instruction::ClearDisplay => {
                 self.display.clear();
                 self.program_counter_reg + 2
             },
-            Return => {
+            Instruction::Return => {
                 let addr = self.stack[(self.stack_pointer_reg - 1) as usize];
                 self.stack_pointer_reg -= 1;
                 addr + 2
             }
-            Jump(addr) => addr,
-            Call(addr) => {
+            Instruction::Jump(addr) => addr,
+            Instruction::Call(addr) => {
                 self.stack_pointer_reg += 1;
                 self.stack[(self.stack_pointer_reg - 1) as usize] = self.program_counter_reg;
                 addr
             }
-            SkipIfEquals(reg_number, value) => {
-                if self.read_reg(reg_number) == value {
+            Instruction::SkipIfEqualsByte(reg, value) => {
+                if self.read_reg(reg) == value {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
                 }
             }
-            SkipIfNotEquals(reg_number, value) => {
-                if self.read_reg(reg_number) != value {
+            Instruction::SkipIfNotEqualsByte(reg, value) => {
+                if self.read_reg(reg) != value {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
                 }
             }
-            0x5 => {
-                let first = instruction.oxoo();
-                let second = instruction.oxoo();
-                if first == second {
+            Instruction::SkipIfEqual(reg1, reg2)  => {
+                if self.read_reg(reg1) == self.read_reg(reg2) {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
                 }
             }
-            0x6 => {
-                let reg_number = instruction.oxoo();
-                let value = instruction.ooxx();
-                self.load_reg(reg_number, value);
+            Instruction::LoadByte(reg, value) => {
+                self.load_reg(reg, value);
                 self.program_counter_reg + 2
             }
-            0x7 => {
-                let reg_number = instruction.oxoo();
+            Instruction::AddByte(reg_number, value) => {
                 let reg_value = self.read_reg(reg_number);
-                let value = instruction.ooxx().wrapping_add(reg_value);
-                self.load_reg(reg_number, value);
+                self.load_reg(reg_number, value.wrapping_add(reg_value));
                 self.program_counter_reg + 2
             }
-            0x8 => {
-                match instruction.ooox() {
-                    0x0 => {
-                        let value = self.read_reg(instruction.ooxo());
-                        self.load_reg(instruction.oxoo(), value);
-                        self.program_counter_reg + 2
-                    }
-                    0x1 => {
-                        panic!("Not yet implemeneted: {:x}", instruction);
-                    }
-                    0x2 => {
-                        let first = self.read_reg(instruction.oxoo());
-                        let second = self.read_reg(instruction.ooxo());
-                        self.load_reg(instruction.oxoo(), first & second);
-                        self.program_counter_reg + 2
-                    }
-                    0x3 => {
-                        let first = self.read_reg(instruction.oxoo());
-                        let second = self.read_reg(instruction.ooxo());
-                        self.load_reg(instruction.oxoo(), first | second);
-                        self.program_counter_reg + 2
-                    }
-                    0x4 => {
-                        // 8xy4 - ADD Vx, Vy
-                        // Set Vx = Vx + Vy, set VF = carry.
-                        // The values of Vx and Vy are added together. If the result is greater than
-                        // 8 bits (i.e., > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits
-                        //  of the result are kept, and stored in Vx.
-                        let first = self.read_reg(instruction.oxoo()) as u16;
-                        let second = self.read_reg(instruction.ooxo()) as u16;
-                        let answer = first + second;
-                        self.load_reg(0xF, (answer > 255) as u8);
-                        self.load_reg(instruction.oxoo(), answer as u8);
-                        self.program_counter_reg + 2
-                    }
-                    0x5 => {
-                        let first = self.read_reg(instruction.oxoo());
-                        let second = self.read_reg(instruction.ooxo());
-                        self.load_reg(0xF, (first > second) as u8);
-                        self.load_reg(instruction.oxoo(), first.wrapping_sub(second));
-                        self.program_counter_reg + 2
-                    }
-                    0x6 => {
-                        let value = self.read_reg(instruction.ooxo());
-                        self.load_reg(0xF, value & 0b1);
-                        self.load_reg(instruction.oxoo(), value >> 1);
-                        self.program_counter_reg + 2
-                    }
-                    0x7 => {
-                        panic!("Not yet implemeneted: {:x}", instruction);
-                    }
-                    0xE => {
-                        let value = self.read_reg(instruction.ooxo());
-                        self.load_reg(0xF, value >> 7);
-                        self.load_reg(instruction.oxoo(), value << 1);
-                        self.program_counter_reg + 2
-                    }
-                    _ => panic!("Unrecognized instruction {:x}", instruction),
-                }
+            Instruction::Move(reg1, reg2) => {
+                let value = self.read_reg(reg2);
+                self.load_reg(reg1, value);
+                self.program_counter_reg + 2
             }
-            0x9 => {
-                let first = instruction.oxoo();
-                let second = instruction.oxoo();
+            Instruction::Or(_, _) => {
+                panic!("Not yet implemeneted: {:?}", instruction);
+            }
+            Instruction::And(reg1, reg2) => {
+                let first = self.read_reg(reg1);
+                let second = self.read_reg(reg2);
+                self.load_reg(reg1, first & second);
+                self.program_counter_reg + 2
+            }
+            Instruction::Xor(reg1, reg2) => {
+                let first = self.read_reg(reg1);
+                let second = self.read_reg(reg2);
+                self.load_reg(reg1, first ^ second);
+                self.program_counter_reg + 2
+            }
+            Instruction::Add(reg1, reg2) => {
+                let first = self.read_reg(reg1) as u16;
+                let second = self.read_reg(reg2) as u16;
+                let answer = first + second;
+                self.load_reg(0xF, (answer > 255) as u8);
+                self.load_reg(reg1, answer as u8);
+                self.program_counter_reg + 2
+            }
+            Instruction::Sub(reg1, reg2) => {
+                let first = self.read_reg(reg1);
+                let second = self.read_reg(reg2);
+                self.load_reg(0xF, (first > second) as u8);
+                self.load_reg(reg1, first.wrapping_sub(second));
+                self.program_counter_reg + 2
+            }
+            Instruction::ShiftRight(reg) => {
+                let value = self.read_reg(reg);
+                self.load_reg(0xF, value & 0b1);
+                self.load_reg(reg, value >> 1);
+                self.program_counter_reg + 2
+            }
+            Instruction::ReverseSub(_, _) => {
+                panic!("Not yet implemeneted: {:?}", instruction);
+            }
+            Instruction::ShiftLeft(reg) => {
+                let value = self.read_reg(reg);
+                self.load_reg(0xF, value >> 7);
+                self.load_reg(reg, value << 1);
+                self.program_counter_reg + 2
+            }
+            Instruction::SkipIfNotEqual(reg1, reg2) => {
+                let first = self.read_reg(reg1);
+                let second = self.read_reg(reg2);
                 if first != second {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
                 }
             }
-            0xA => {
-                // load reg i with the value oxxx
-                self.i_reg = instruction.oxxx();
+            Instruction::LoadI(value) => {
+                self.i_reg = value;
                 self.program_counter_reg + 2
             }
-            0xB => {
-                panic!("Not yet implemeneted: {:x}", instruction);
+            Instruction::JumpPlusZero(_) => {
+                panic!("Not yet implemeneted: {:?}", instruction);
             }
-            0xC => {
-                let reg_number = instruction.oxoo();
-                let value = instruction.ooxx();
+            Instruction::Random(reg, value) => {
                 let rng = &mut rand::thread_rng();
                 let rand_number = Range::new(0, 255).ind_sample(rng);
 
-                self.load_reg(reg_number, rand_number & value);
+                self.load_reg(reg, rand_number & value);
                 self.program_counter_reg + 2
             }
-            0xD => {
-                // load ooox bytes to the screen starting at coor oxoo,ooxo with the sprite located
-                // at memory location stored in reg i
-                let x = self.read_reg(instruction.oxoo());
-                let y = self.read_reg(instruction.ooxo());
-                let n = instruction.ooox();
-                let i = self.i_reg;
-                let from = i as usize;
+            Instruction::Draw(reg1, reg2, n) => {
+                let x = self.read_reg(reg1);
+                let y = self.read_reg(reg2);
+                let from = self.i_reg as usize;
                 let to = from + (n as usize);
 
                 self.regs[0xF] = self.display.draw(x, y, &self.memory[from..to]) as u8;
                 self.program_counter_reg + 2
             }
-            0xE => {
-                let value = self.read_reg(instruction.oxoo());
+            Instruction::SkipIfPressed(reg) => {
+                let value = self.read_reg(reg);
                 let pressed = self.keyboard[value as usize];
-                match instruction.ooxx() {
-                    0x9E => {
-                        if pressed {
-                            self.program_counter_reg + 4
-                        } else {
-                            self.program_counter_reg + 2
-                        }
-                    }
-                    0xA1 => {
-                        if pressed {
-                            self.program_counter_reg + 2
-                        } else {
-                            self.program_counter_reg + 4
-                        }
-                    }
-                    _ => panic!("Unrecognized instruction {:x}", instruction),
+                if pressed {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
                 }
             }
-            0xF => {
-                match instruction.ooxx() {
-                    0x07 => {
-                        let reg_number = instruction.oxoo();
-                        let delay_value = self.delay_timer_reg;
-                        self.load_reg(reg_number, delay_value);
-                        self.program_counter_reg + 2
-                    }
-                    0x0A => {
-                        self.key_to_wait_for = Some(instruction.oxoo());
-                        self.program_counter_reg + 2
-                    }
-                    0x15 => {
-                        let value = self.read_reg(instruction.oxoo());
-                        self.delay_timer_reg = value;
-                        self.program_counter_reg + 2
-                    }
-                    0x18 => {
-                        // TODO: set sound timer
-                        self.program_counter_reg + 2
-                    }
-                    0x1E => {
-                        let value = self.read_reg(instruction.oxoo()) as u16;
-                        self.i_reg = self.i_reg + value;
-                        self.program_counter_reg + 2
-                    }
-                    0x29 => {
-                        let reg = instruction.oxoo();
-                        let digit = self.read_reg(reg);
-                        self.i_reg = (digit * 5) as u16;
-                        self.program_counter_reg + 2
-                    }
-                    0x33 => {
-                        let reg_number = instruction.oxoo();
-                        let value = self.read_reg(reg_number);
-                        self.memory[self.i_reg as usize] = (value / 100) % 10;
-                        self.memory[(self.i_reg + 1) as usize] = (value / 10) % 10;
-                        self.memory[(self.i_reg + 2) as usize] = value % 10;
-                        self.program_counter_reg + 2
-                    }
-                    0x55 => {
-                        let highest_reg = instruction.oxoo();
-
-                        let i = self.i_reg;
-                        for reg_number in 0..(highest_reg + 1) {
-                            self.memory[(i + reg_number as u16) as usize] =
-                                self.read_reg(reg_number);
-                        }
-                        self.program_counter_reg + 2
-                    }
-                    0x65 => {
-                        let highest_reg = instruction.oxoo();
-                        let i = self.i_reg;
-                        for reg_number in 0..(highest_reg + 1) {
-                            let value = self.memory[(i + reg_number as u16) as usize];
-                            self.load_reg(reg_number, value);
-                        }
-                        self.program_counter_reg + 2
-                    }
-                    _ => panic!("Unrecognized instruction {:x}", instruction),
+            Instruction::SkipIfNotPressed(reg) => {
+                let value = self.read_reg(reg);
+                let pressed = self.keyboard[value as usize];
+                if !pressed {
+                    self.program_counter_reg + 4
+                } else {
+                    self.program_counter_reg + 2
                 }
             }
-            _ => panic!("Unrecognized instruction {:x}", instruction),
+            Instruction::LoadDelayTimer(reg) => {
+                let delay_value = self.delay_timer_reg;
+                self.load_reg(reg, delay_value);
+                self.program_counter_reg + 2
+            }
+            Instruction::WaitForKeyPress(reg) => {
+                //TODO rename key_to_wait_for
+                self.key_to_wait_for = Some(reg);
+                self.program_counter_reg + 2
+            }
+            Instruction::SetDelayTimer(reg) => {
+                let value = self.read_reg(reg);
+                self.delay_timer_reg = value;
+                self.program_counter_reg + 2
+            }
+            Instruction::SetSoundTimer(_) => {
+                // TODO: set sound timer
+                self.program_counter_reg + 2
+            }
+            Instruction::AddToI(reg) => {
+                let value = self.read_reg(reg) as u16;
+                self.i_reg = self.i_reg + value;
+                self.program_counter_reg + 2
+            }
+            Instruction::LoadSprite(reg) => {
+                let digit = self.read_reg(reg);
+                self.i_reg = (digit * 5) as u16;
+                self.program_counter_reg + 2
+            }
+            Instruction::BCDRepresentation(reg) => {
+                let value = self.read_reg(reg);
+                self.memory[self.i_reg as usize] = (value / 100) % 10;
+                self.memory[(self.i_reg + 1) as usize] = (value / 10) % 10;
+                self.memory[(self.i_reg + 2) as usize] = value % 10;
+                self.program_counter_reg + 2
+            }
+            Instruction::StoreRegisters(highest_reg) => {
+                let i = self.i_reg;
+                for reg_number in 0..(highest_reg + 1) {
+                    self.memory[(i + reg_number as u16) as usize] =
+                        self.read_reg(reg_number);
+                }
+                self.program_counter_reg + 2
+            }
+            Instruction::LoadRegisters(highest_reg) => {
+                let i = self.i_reg;
+                for reg_number in 0..(highest_reg + 1) {
+                    let value = self.memory[(i + reg_number as u16) as usize];
+                    self.load_reg(reg_number, value);
+                }
+                self.program_counter_reg + 2
+            }
         }
     }
 
@@ -400,7 +363,7 @@ impl Chip8 {
         let pc = self.program_counter_reg;
         let higher_order = (self.memory[pc as usize] as u16) << 8;
         let lower_order = self.memory[(pc + 1) as usize] as u16;
-        Instruction::new(higher_order + lower_order)
+        RawInstruction::new(higher_order + lower_order).to_instruction().expect("Unrecognized instruction")
     }
 
     fn read_reg(&self, reg_number: u8) -> u8 {
