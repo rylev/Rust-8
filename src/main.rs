@@ -145,42 +145,32 @@ impl Chip8 {
         }
     }
 
-    fn run_instruction(&mut self, instruction: Instruction) -> u16 {
-        match instruction.xooo() {
-            0x0 => {
-                match instruction.ooxx() {
-                    0xEE => {
-                        let addr = self.stack[(self.stack_pointer_reg - 1) as usize];
-                        self.stack_pointer_reg -= 1;
-                        addr + 2
-                    }
-                    0xE0 => {
-                        self.display.clear();
-                        self.program_counter_reg + 2
-                    }
-                    _ => panic!("Unrecognized instruction {:x}", instruction),
-                }
+    fn run_instruction(&mut self, instruction: &Instruction) -> u16 {
+        match instruction {
+            ClearDisplay => {
+                self.display.clear();
+                self.program_counter_reg + 2
+            },
+            Return => {
+                let addr = self.stack[(self.stack_pointer_reg - 1) as usize];
+                self.stack_pointer_reg -= 1;
+                addr + 2
             }
-            0x1 => instruction.oxxx(),
-            0x2 => {
-                let addr = instruction.oxxx();
+            Jump(addr) => addr,
+            Call(addr) => {
                 self.stack_pointer_reg += 1;
                 self.stack[(self.stack_pointer_reg - 1) as usize] = self.program_counter_reg;
                 addr
             }
-            0x3 => {
-                let reg_value = self.read_reg(instruction.oxoo());
-                let value = instruction.ooxx();
-                if reg_value == value {
+            SkipIfEquals(reg_number, value) => {
+                if self.read_reg(reg_number) == value {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
                 }
             }
-            0x4 => {
-                let reg_value = self.read_reg(instruction.oxoo());
-                let value = instruction.ooxx();
-                if reg_value != value {
+            SkipIfNotEquals(reg_number, value) => {
+                if self.read_reg(reg_number) != value {
                     self.program_counter_reg + 4
                 } else {
                     self.program_counter_reg + 2
