@@ -54,9 +54,9 @@ impl RawInstruction {
                 match self.ooxx() {
                     0xE0 => Some(Instruction::ClearDisplay),
                     0xEE => Some(Instruction::Return),
-                    _    => None
+                    _ => None,
                 }
-            },
+            }
             0x1 => Some(Instruction::Jump(self.oxxx())),
             0x2 => Some(Instruction::Call(self.oxxx())),
             0x3 => Some(Instruction::SkipIfEqualsByte(self.oxoo(), self.ooxx())),
@@ -75,9 +75,9 @@ impl RawInstruction {
                     0x6 => Some(Instruction::ShiftRight(self.oxoo())),
                     0x7 => Some(Instruction::ReverseSub(self.oxoo(), self.ooxo())),
                     0xE => Some(Instruction::ShiftLeft(self.oxoo())),
-                    _   => None
+                    _ => None,
                 }
-            },
+            }
             0x9 => Some(Instruction::SkipIfNotEqual(self.oxoo(), self.ooxo())),
             0xA => Some(Instruction::LoadI(self.oxxx())),
             0xB => Some(Instruction::JumpPlusZero(self.oxxx())),
@@ -87,7 +87,7 @@ impl RawInstruction {
                 match self.ooxx() {
                     0x9E => Some(Instruction::SkipIfPressed(self.oxoo())),
                     0xA1 => Some(Instruction::SkipIfNotPressed(self.oxoo())),
-                    _ => None
+                    _ => None,
                 }
             }
             0xF => {
@@ -101,10 +101,10 @@ impl RawInstruction {
                     0x33 => Some(Instruction::BCDRepresentation(self.oxoo())),
                     0x55 => Some(Instruction::StoreRegisters(self.oxoo())),
                     0x65 => Some(Instruction::LoadRegisters(self.oxoo())),
-                    _    => None
+                    _ => None,
                 }
             }
-            _   => None
+            _ => None,
         }
     }
 
