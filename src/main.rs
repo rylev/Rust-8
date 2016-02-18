@@ -20,7 +20,7 @@ fn main() {
     let mut game_data = Vec::new();
     file.read_to_end(&mut game_data).expect("Failure to read file");
 
-    let window: PistonWindow = WindowSettings::new("Chip 8 Emulator", WINDOW_DIMENSIONS)
+    let window: PistonWindow = WindowSettings::new("Rust-8 Emulator", WINDOW_DIMENSIONS)
                                    .exit_on_esc(true)
                                    .build()
                                    .unwrap();
