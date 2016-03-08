@@ -21,6 +21,15 @@ You can find a list of games [here](http://chip8.com/?page=84).
 
 You can find more information on the [CHIP-8 wikipedia page](https://en.wikipedia.org/wiki/CHIP-8) or on the [CHIP-8 website](http://chip8.com).
 
+## Running it
+
+You can find lots of game ROMs online. The best source of games I've found is
+the CHIP-8 website listed above.
+
+Once you have a game ROM you can run it with:
+
+`cargo run -- $GAME`
+
 ## Why a CHIP-8 implementation?
 
 I was inspired by Jake Taylor's live streaming project of building an [N64
@@ -33,3 +42,13 @@ I got the emulator working in less than a week, for example.
 
 Rust is awesome. If you start a project where you think you need either C or
 C++, [reach for Rust next time](https://www.rust-lang.org/).
+
+## References
+
+A big thank you to all the people who wrote references about the Chip-8 and
+posted them online. One reason that the Chip-8 is such a great learning
+VM/emulator is because of the awesome references.
+
+* Matthew Mikolay's [Mastering
+  Chip-8](http://mattmik.com/files/chip8/mastering/chip8.html)
+* Cowgod's [Chip-8 Reference](http://devernay.free.fr/hacks/chip8/C8TECH10.HTM)

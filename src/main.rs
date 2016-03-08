@@ -78,6 +78,7 @@ fn draw_screen(display_buffer: &display::Buffer, window: &PistonWindow) {
     })
 }
 
+#[allow(dead_code)]
 fn debug(display_buffer: &display::Buffer) {
     for row in display_buffer.iter() {
         print!("|");

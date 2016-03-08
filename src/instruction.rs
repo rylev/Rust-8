@@ -1,5 +1,5 @@
-type Address = u16;
-type Register = u8;
+pub type Address = u16;
+pub type Register = u8;
 
 #[derive(Debug)]
 pub enum Instruction {
